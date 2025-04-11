@@ -201,9 +201,6 @@ def treatment_effect_analysis(df, metadata_df, mutation, treatment, alpha=0.05, 
     
     if len(test_samples) == 0 or len(control_samples) == 0:
         return None
-    else: 
-        print(f"Test samples: {test_samples}")
-        print(f"Control samples: {control_samples}")
         
     # Get gene information
     gene_info = df[['gene_id', 'symbol']].copy()
@@ -265,12 +262,11 @@ def treatment_effect_analysis(df, metadata_df, mutation, treatment, alpha=0.05, 
         de_results['padj'] = multipletests(de_results['p_value'], method='fdr_bh')[1]
         
         # Flag significant genes
-        de_results['significant'] = (de_results['padj'] < alpha) & (abs(de_results['log2FC']) >= fc_threshold)
+        de_results['significant'] = (de_results['padj'] <= alpha) & (abs(de_results['log2FC']) >= fc_threshold)
         
         # Sort by adjusted p-value
         de_results = de_results.sort_values('padj')
     
-    print(de_results.head())
     return de_results
 
 def analyze_erk_akt_pathway(df, metadata_df):
@@ -632,6 +628,30 @@ def main():
     st.sidebar.header("Data Processing")
     min_count = st.sidebar.slider("Minimum expression threshold", min_value=0, max_value=50, value=10)
     
+    # Add significance threshold settings to sidebar
+    st.sidebar.header("Significance Settings")
+    
+    # Add alpha threshold input
+    alpha_threshold = st.sidebar.number_input(
+        "P-value threshold (alpha)",
+        min_value=0.0001,
+        max_value=1.0000,
+        value=0.05,
+        format="%.4f",
+        help="Adjusted p-value threshold for determining statistical significance"
+    )
+    
+    # Add log fold change threshold input
+    fc_threshold = st.sidebar.number_input(
+        "Log2 fold change threshold",
+        min_value=0.0,
+        max_value=5.0,
+        value=1.0,
+        step=0.1,
+        format="%.1f",
+        help="Minimum absolute log2 fold change required for significance"
+    )
+    
     # Filter low-expression genes
     filtered_df = filter_low_expression_genes(df, min_count=min_count)
     
@@ -717,6 +737,7 @@ def main():
         num_var_genes = st.slider("Number of top variable genes to show", min_value=10, max_value=100, value=50)
         top_var_genes = get_most_variable_genes(normalized_df, metadata_df, n=num_var_genes)
         
+        
         # Heatmap of top variable genes
         st.write("Heatmap of top variable genes across mutations (DMSO treatment)")
         st.info("This heatmap shows the expression patterns of genes with the highest variance across all samples, specifically in DMSO treatment. These genes are most likely to reveal differences between mutations.")
@@ -747,20 +768,27 @@ def main():
     
     # Tab 2: Mutation Analysis
     with tab2:
-        st.header("Differential Expression Analysis of Mutations")
+        st.header("Differential Expression Analysis of Mutations (given DMSO treatment)")
         
         # Select mutation and control
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             selected_mutation = st.selectbox("Select mutation:", mutations, index=0)
         with col2:
             control_mutation = st.selectbox("Control mutation:", mutations, index=mutations.index('WT') if 'WT' in mutations else 0)
-        
+
         if selected_mutation == control_mutation:
             st.warning("Please select different mutations for comparison")
         else:
-            # Run DE analysis
-            de_results = de_analysis(normalized_df, metadata_df, selected_mutation, control_mutation)
+            # Run DE analysis - pass the global thresholds
+            de_results = de_analysis(
+                normalized_df, 
+                metadata_df, 
+                selected_mutation, 
+                control_mutation,
+                alpha=alpha_threshold,
+                fc_threshold=fc_threshold
+            )
             
             if de_results is None or de_results.empty:
                 st.error(f"Not enough data for comparison between {selected_mutation} and {control_mutation}")
@@ -879,20 +907,28 @@ def main():
                 selected_treatment = None
         
         if selected_treatment:
-            # Run treatment effect analysis
-            treatment_results = treatment_effect_analysis(normalized_df, metadata_df, selected_mutation_t, selected_treatment)
+            # Run treatment effect analysis - pass the global thresholds
+            treatment_results = treatment_effect_analysis(
+                normalized_df, 
+                metadata_df, 
+                selected_mutation_t, 
+                selected_treatment,
+                alpha=alpha_threshold,
+                fc_threshold=fc_threshold
+            )
             
             if treatment_results is None or treatment_results.empty:
                 st.error(f"Not enough data for comparison between {selected_treatment} and DMSO in {selected_mutation_t}")
             else:
                 # Summary of treatment effect results
                 st.subheader("Treatment Effect Results")
-                
+
                 # Count significant genes
                 num_sig = treatment_results['significant'].sum()
                 num_up = sum((treatment_results['significant']) & (treatment_results['log2FC'] > 0))
                 num_down = sum((treatment_results['significant']) & (treatment_results['log2FC'] < 0))
                 
+                st.info(f"Only significant genes are shown in the table below.")
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.metric("Significant DEGs", num_sig)
@@ -955,7 +991,14 @@ def main():
                 treatment_response_data = []
                 
                 for mutation in mutations:
-                    result = treatment_effect_analysis(normalized_df, metadata_df, mutation, selected_treatment)
+                    result = treatment_effect_analysis(
+                        normalized_df, 
+                        metadata_df, 
+                        mutation, 
+                        selected_treatment,
+                        alpha=alpha_threshold,
+                        fc_threshold=fc_threshold
+                    )
                     if result is not None and not result.empty:
                         num_sig_up = sum((result['significant']) & (result['log2FC'] > 0))
                         num_sig_down = sum((result['significant']) & (result['log2FC'] < 0))
@@ -1117,18 +1160,19 @@ def main():
                     selected_treatment_p = None
             
             if selected_treatment_p:
-                # Get treatment effect on pathway genes
+                # Get treatment effect on pathway genes - pass the global thresholds
                 treatment_results = treatment_effect_analysis(
                     normalized_df[normalized_df['symbol'].isin(pathway_df['symbol'])],
                     metadata_df,
                     selected_mutation_p,
-                    selected_treatment_p
+                    selected_treatment_p,
+                    alpha=alpha_threshold,
+                    fc_threshold=fc_threshold
                 )
                 
                 if treatment_results is not None and not treatment_results.empty:
                     # Sort by absolute log2FC
                     treatment_results['abs_log2FC'] = abs(treatment_results['log2FC'])
-                    treatment_results = treatment_results.sort_values('abs_log2FC', ascending=False)
 
                     # Add checkbox to filter for significant genes
                     show_significant_only_p = st.checkbox(
@@ -1138,8 +1182,8 @@ def main():
                         help="When checked, only genes with adjusted p-value < 0.05 and |log2FC| > 1 will be highlighted"
                     )
 
-                    # compute significance column
-                    treatment_results['significant'] = (treatment_results['padj'] < 0.05) & (treatment_results['abs_log2FC'] > 1)
+                    # compute significance column using the global thresholds
+                    treatment_results['significant'] = (treatment_results['padj'] < alpha_threshold) & (treatment_results['abs_log2FC'] > fc_threshold)
                     
                     # Filter data based on checkbox
                     if show_significant_only_p:
@@ -1164,7 +1208,7 @@ def main():
                     
                     # Add explanation for empty results
                     if sum(treatment_results['significant']) == 0:
-                        st.write(f"No significant changes were detected in pathway genes after {selected_treatment_p} treatment in {selected_mutation_p} cells. Consider unchecking the 'Show significant genes only' option to see all changes.")
+                        st.write(f"No significant changes were detected in pathway genes after {selected_treatment_p} treatment in {selected_mutation_p} cells. Consider unchecking the 'Show significant genes only' option to see all changes, or adjusting the significance thresholds in the sidebar.")
                 else:
                     st.warning("Not enough data to analyze treatment effect on pathway genes")
                     st.write(f"There might not be enough replicates or the data quality is insufficient for {selected_mutation_p} with {selected_treatment_p} treatment.")
